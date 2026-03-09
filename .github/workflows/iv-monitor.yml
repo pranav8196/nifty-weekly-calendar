@@ -1,9 +1,7 @@
 name: NIFTY IV Calendar Spread Monitor
 
 on:
-  schedule:
-    - cron: "55 3 * * 1-5"  # 9:25 AM IST Mon–Fri
-  workflow_dispatch:
+  workflow_dispatch:  # Triggered by cron-job.org at 9:25 AM IST Mon–Fri; also allows manual runs
 
 jobs:
   iv-monitor:
