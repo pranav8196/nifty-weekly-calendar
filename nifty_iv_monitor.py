@@ -31,6 +31,21 @@ PAIRS = [
 
 CHECK_SLOTS = [dtime(9, 30), dtime(10, 0), dtime(10, 30), dtime(11, 0)]
 
+# ---------- NSE Weekly Expiries (hardcoded fallback) ----------
+WEEKLY_EXPIRIES = [
+    "10-Mar-2026", "17-Mar-2026", "24-Mar-2026", "30-Mar-2026",
+    "07-Apr-2026", "13-Apr-2026", "21-Apr-2026", "28-Apr-2026",
+    "05-May-2026", "12-May-2026", "19-May-2026", "26-May-2026",
+    "02-Jun-2026", "09-Jun-2026", "16-Jun-2026", "23-Jun-2026",
+    "30-Jun-2026", "07-Jul-2026", "14-Jul-2026", "21-Jul-2026",
+    "28-Jul-2026", "04-Aug-2026", "11-Aug-2026", "18-Aug-2026",
+    "25-Aug-2026", "01-Sep-2026", "08-Sep-2026", "15-Sep-2026",
+    "22-Sep-2026", "29-Sep-2026", "06-Oct-2026", "13-Oct-2026",
+    "19-Oct-2026", "27-Oct-2026", "03-Nov-2026", "09-Nov-2026",
+    "17-Nov-2026", "23-Nov-2026", "01-Dec-2026", "08-Dec-2026",
+    "15-Dec-2026", "22-Dec-2026", "29-Dec-2026",
+]
+
 # ---------- NSE Market Holidays 2026 ----------
 MARKET_HOLIDAYS = {
     "2026-01-15": "Municipal Corporation Election - Maharashtra",
@@ -141,6 +156,19 @@ def get_expiry_list(data: dict) -> list[date]:
     for s in raw:
         try:
             dates.append(datetime.strptime(s, "%d-%b-%Y").date())
+        except Exception:
+            continue
+    return sorted(dates)
+
+
+def get_expiry_dates_from_hardcoded(today: date) -> list[date]:
+    """Return hardcoded expiry dates on or after today, as sorted date objects."""
+    dates = []
+    for s in WEEKLY_EXPIRIES:
+        try:
+            d = datetime.strptime(s, "%d-%b-%Y").date()
+            if d >= today:
+                dates.append(d)
         except Exception:
             continue
     return sorted(dates)
@@ -354,18 +382,20 @@ def collect_ivs_for_slot(today: date) -> tuple[dict[int, float], dict[int, date]
     """
     print(f"\n[collect_ivs] Fetching base chain...")
     base_data = fetch_option_chain()
-    if base_data is None:
-        print("[collect_ivs] Base fetch failed.")
-        return {}, {}, None, None
 
-    expiry_dates = get_expiry_list(base_data)
-    spot = get_spot_price(base_data)
+    expiry_dates = get_expiry_list(base_data) if base_data else []
+    spot = get_spot_price(base_data) if base_data else None
+
+    if not expiry_dates:
+        print("[collect_ivs] No expiry dates from base chain — using hardcoded list.")
+        expiry_dates = get_expiry_dates_from_hardcoded(today)
+
     print(f"[collect_ivs] Expiries ({len(expiry_dates)}): {expiry_dates[:6]}")
     print(f"[collect_ivs] Spot: {spot}")
 
-    if not expiry_dates or spot is None:
-        print("[collect_ivs] Missing expiry list or spot price.")
-        return {}, {}, spot, None
+    if not expiry_dates:
+        print("[collect_ivs] No expiry dates available.")
+        return {}, {}, None, None
 
     w_map = get_w_expiries(today, expiry_dates)
     print(f"[collect_ivs] W-map: { {k: v.isoformat() for k, v in w_map.items()} }")
@@ -374,13 +404,32 @@ def collect_ivs_for_slot(today: date) -> tuple[dict[int, float], dict[int, date]
         print("[collect_ivs] No W expiries found.")
         return {}, {}, spot, None
 
-    # Compute ATM from base chain
-    all_strikes_base = sorted(set(
-        item["strikePrice"]
-        for item in base_data.get("records", {}).get("data", [])
-        if "strikePrice" in item
-    ))
-    atm = find_atm_strike(spot, all_strikes_base) if all_strikes_base else None
+    # If base chain failed to give spot, fetch it from the nearest W expiry
+    if spot is None:
+        for w_idx in sorted(w_map.keys()):
+            fallback_exp = w_map[w_idx].strftime("%d-%b-%Y")
+            print(f"[collect_ivs] Fetching spot from W{w_idx} chain ({fallback_exp})...")
+            fallback_data = fetch_option_chain(fallback_exp)
+            if fallback_data:
+                spot = get_spot_price(fallback_data)
+                if spot:
+                    print(f"[collect_ivs] Got spot={spot} from W{w_idx} chain.")
+                    break
+            time.sleep(1.5)
+
+    if spot is None:
+        print("[collect_ivs] Could not determine spot price.")
+        return {}, {}, None, None
+
+    # Compute ATM from base chain (for display only)
+    atm = None
+    if base_data:
+        all_strikes_base = sorted(set(
+            item["strikePrice"]
+            for item in base_data.get("records", {}).get("data", [])
+            if "strikePrice" in item
+        ))
+        atm = find_atm_strike(spot, all_strikes_base) if all_strikes_base else None
 
     # Fetch per-expiry IV
     iv_map: dict[int, float] = {}
